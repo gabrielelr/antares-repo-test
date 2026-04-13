@@ -169,13 +169,16 @@ def build_weekly_report_blocks(changelogs_data: list) -> dict:
         {"type": "divider"},
     ]
 
-    # Larghezze colonne (caratteri) — desc ampia, Slack fa scroll orizzontale
-    W = {"date": 11, "type": 13, "desc": 55, "author": 16, "project": 14}
+    # Larghezze colonne (caratteri) — desc senza limite, Slack fa scroll orizzontale
+    W = {"date": 11, "type": 13, "author": 16, "project": 14}
 
     def pad(s, w):
         s = str(s or "—")
-        # Tronca solo se proprio necessario, aggiunge "…" per segnalare il taglio
-        return (s[:w - 1] + "…").ljust(w) if len(s) >= w else s.ljust(w)
+        return s.ljust(w)
+
+    def pad_desc(s):
+        # Nessun troncamento sulla descrizione
+        return str(s or "—")
 
     for item in active:
         meta    = item["meta"]
@@ -198,19 +201,20 @@ def build_weekly_report_blocks(changelogs_data: list) -> dict:
         col_header = (
             pad("DATA",     W["date"])
             + pad("TIPO",   W["type"])
-            + pad("MODIFICA", W["desc"])
+            + pad("MODIFICA", 55)
             + pad("AUTORE", W["author"])
             + "PROGETTO"
         )
-        sep = "─" * (sum(W.values()) + 2)
+        sep = "─" * (sum(W.values()) + 57)
         rows = [col_header, sep]
 
         for e in entries:
+            desc_padded = pad_desc(e["description"]).ljust(55)
             rows.append(
-                pad(e["date"],        W["date"])
-                + pad(e["type"],      W["type"])
-                + pad(e["description"], W["desc"])
-                + pad(e["author"],    W["author"])
+                pad(e["date"],    W["date"])
+                + pad(e["type"],  W["type"])
+                + desc_padded
+                + pad(e["author"], W["author"])
                 + (e["project"] or "—")
             )
 
