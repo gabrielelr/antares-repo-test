@@ -126,39 +126,87 @@ def parse_entries(content: str) -> list:
     return entries
 
 
-# ─── Messaggio 1: Report strutturato (Python, no LLM) ────────────────────────
+# ─── Messaggio 1: Report strutturato Block Kit ───────────────────────────────
 
-def build_weekly_report(changelogs_data: list) -> str:
+def build_weekly_report_blocks(changelogs_data: list) -> dict:
     today = datetime.now().strftime("%d %b %Y")
-    n_components = len([d for d in changelogs_data if d["entries"]])
-    lines = [
-        f"📋 *Antares DS — Weekly Report* | {today}",
-        f"_{n_components} {'componente aggiornato' if n_components == 1 else 'componenti aggiornati'} questa settimana_",
-        "",
+    active = [d for d in changelogs_data if d["entries"]]
+    n = len(active)
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"📋  Antares DS — Weekly Report  |  {today}",
+                "emoji": True,
+            },
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"_{n} {'componente aggiornato' if n == 1 else 'componenti aggiornati'} questa settimana_",
+                }
+            ],
+        },
+        {"type": "divider"},
     ]
 
-    for item in changelogs_data:
-        meta = item["meta"]
-        entries = item["entries"]
-        if not entries:
-            continue
+    # Larghezze colonne (caratteri)
+    W = {"date": 11, "type": 13, "desc": 38, "author": 16, "project": 12}
 
-        component_name = meta.get("component") or item["filepath"].split("/")[1].title()
-        dates = list(dict.fromkeys(e["date"] for e in entries))
-        lines.append(f"*{component_name}* · {', '.join(dates)}")
+    def pad(s, w):
+        s = str(s or "—")
+        return s[:w - 1].ljust(w) if len(s) >= w else s.ljust(w)
+
+    for item in active:
+        meta    = item["meta"]
+        entries = item["entries"]
+        component = meta.get("component") or item["filepath"].split("/")[1].title()
+        figma_id  = meta.get("figma_id", "").strip().strip('"')
+        figma_url = f"{FIGMA_BASE_URL}{figma_id}" if figma_id else None
+
+        # ── Intestazione componente ──
+        header_md = f"*{component}*"
+        if figma_url:
+            header_md += f"   |   <{figma_url}|Apri in Figma →>"
+
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": header_md},
+        })
+
+        # ── Tabella monospace ──
+        col_header = (
+            pad("DATA",     W["date"])
+            + pad("TIPO",   W["type"])
+            + pad("MODIFICA", W["desc"])
+            + pad("AUTORE", W["author"])
+            + "PROGETTO"
+        )
+        sep = "─" * (sum(W.values()) + 2)
+        rows = [col_header, sep]
 
         for e in entries:
-            emoji = get_emoji(e["type"])
-            line = f"  {emoji}  {e['type']} · {e['description']}"
-            if e["author"]:
-                line += f"  —  {e['author']}"
-            if e["project"]:
-                line += f"  ·  _{e['project']}_"
-            lines.append(line)
+            rows.append(
+                pad(e["date"],        W["date"])
+                + pad(e["type"],      W["type"])
+                + pad(e["description"], W["desc"])
+                + pad(e["author"],    W["author"])
+                + (e["project"] or "—")
+            )
 
-        lines.append("")
+        table = "```" + "\n".join(rows) + "```"
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": table},
+        })
 
-    return "\n".join(lines).strip()
+        blocks.append({"type": "divider"})
+
+    return {"blocks": blocks}
 
 
 # ─── Messaggio 2+: Post per componente (Claude) ───────────────────────────────
@@ -258,8 +306,9 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON valido, senza testo prima o dopo:
 
 # ─── Slack ────────────────────────────────────────────────────────────────────
 
-def post_to_slack(text: str):
-    body = json.dumps({"text": text}).encode("utf-8")
+def post_to_slack(payload: dict):
+    """payload può essere {"text": "..."} oppure {"blocks": [...]}"""
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         SLACK_WEBHOOK_URL,
         data=body,
@@ -312,16 +361,16 @@ def main():
         print("❌ Nessun file leggibile. Esco.")
         return
 
-    # Messaggio 1 — Report strutturato
+    # Messaggio 1 — Report strutturato Block Kit
     print("📤 Invio report strutturato su Slack...")
-    post_to_slack(build_weekly_report(changelogs_data))
+    post_to_slack(build_weekly_report_blocks(changelogs_data))
     print("   ✅ Report settimanale inviato")
 
     # Messaggi 2+ — Post per componente
-    print(f"🤖 Chiamo Claude per i post per componente...")
+    print("🤖 Chiamo Claude per i post per componente...")
     result = call_claude(changelogs_data)
     for item in result.get("component_posts", []):
-        post_to_slack(item["post"])
+        post_to_slack({"text": item["post"]})
         print(f"   ✅ Post inviato: {item['component']}")
 
     print("🏷️  Creo tag report...")
