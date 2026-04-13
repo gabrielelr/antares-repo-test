@@ -94,7 +94,7 @@ def parse_entries(content: str) -> list:
     entries = []
     current_date = ""
     body = re.sub(r"^---.*?---\s*", "", content, flags=re.DOTALL)
-    body = re.sub(r"^#[^\n]*\n", "", body, flags=re.MULTILINE)
+    body = re.sub(r"^#(?!#)[^\n]*\n", "", body, flags=re.MULTILINE)  # rimuove solo # non ##
 
     for line in body.split("\n"):
         date_match = re.match(r"^###\s+(.+)", line)
