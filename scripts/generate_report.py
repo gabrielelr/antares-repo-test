@@ -115,6 +115,12 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON valido, senza testo prima o dopo:
     with urllib.request.urlopen(req) as resp:
         result = json.loads(resp.read())
         raw = result["content"][0]["text"].strip()
+        # Rimuove eventuali code block markdown (```json ... ```)
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
         return json.loads(raw)
 
 
