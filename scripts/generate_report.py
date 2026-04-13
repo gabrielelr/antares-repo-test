@@ -57,8 +57,14 @@ def get_changed_changelog_files(since_ref):
 
 
 def create_report_tag():
-    today = datetime.now().strftime("%Y-%m-%d")
-    tag = f"report-{today}"
+    base = datetime.now().strftime("%Y-%m-%d")
+    tag = f"report-{base}"
+    # Se il tag esiste già (run multipli nello stesso giorno) aggiungi orario
+    existing = subprocess.run(
+        ["git", "tag", "--list", tag], capture_output=True, text=True
+    ).stdout.strip()
+    if existing:
+        tag = f"report-{datetime.now().strftime('%Y-%m-%d-%H%M')}"
     subprocess.run(["git", "tag", tag], check=True)
     subprocess.run(["git", "push", "origin", tag], check=True)
     return tag
@@ -287,11 +293,17 @@ def main():
     for filepath in changed_files:
         if os.path.exists(filepath):
             content = open(filepath).read()
+            entries = parse_entries(content)
+            print(f"   📄 {filepath} → {len(entries)} entry trovate")
+            if not entries:
+                # Stampa le prime 20 righe per debug formato
+                preview = "\n".join(content.splitlines()[:20])
+                print(f"   ⚠️  Nessuna entry parsificata. Anteprima file:\n{preview}\n")
             changelogs_data.append({
                 "filepath": filepath,
                 "content": content,
                 "meta": parse_frontmatter(content),
-                "entries": parse_entries(content),
+                "entries": entries,
             })
         else:
             print(f"⚠️  File non trovato: {filepath}")
