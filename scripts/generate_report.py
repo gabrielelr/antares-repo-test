@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 Antares DS — Weekly Report Generator
-Legge i changelog modificati dall'ultimo report, chiama Claude,
-posta un riassunto + post per componente su Slack.
+Messaggio 1: report strutturato (componenti, date, autori, progetti)
+Messaggio 2+: post conversazionale per ogni componente (Claude)
 """
 
 import os
 import json
+import re
 import subprocess
 import urllib.request
 import urllib.error
@@ -15,12 +16,25 @@ from datetime import datetime
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 SLACK_WEBHOOK_URL = os.environ["SLACK_WEBHOOK_URL"]
 CLAUDE_MODEL = "claude-sonnet-4-6"
+FIGMA_BASE_URL = "https://www.figma.com/file/"
+
+TYPE_EMOJI = {
+    "new": "🆕",
+    "updated": "✏️",
+    "update": "✏️",
+    "bug fix": "🐛",
+    "fix": "🐛",
+    "removed": "🗑️",
+    "deprecated": "⚠️",
+}
+
+def get_emoji(change_type: str) -> str:
+    return TYPE_EMOJI.get(change_type.lower(), "•")
 
 
-# ─── Git helpers ────────────────────────────────────────────────────────────
+# ─── Git ─────────────────────────────────────────────────────────────────────
 
 def get_last_report_tag():
-    """Restituisce l'ultimo tag report-* o None se non esiste."""
     result = subprocess.run(
         ["git", "tag", "--list", "report-*", "--sort=-version:refname"],
         capture_output=True, text=True
@@ -30,15 +44,10 @@ def get_last_report_tag():
 
 
 def get_changed_changelog_files(since_ref):
-    """
-    Restituisce i path dei changelog.md modificati dall'ultimo report.
-    Se non esiste nessun tag, usa i commit degli ultimi 7 giorni.
-    """
     if since_ref:
         cmd = ["git", "diff", "--name-only", since_ref, "HEAD"]
     else:
         cmd = ["git", "log", "--name-only", "--pretty=format:", "--since=7 days ago"]
-
     result = subprocess.run(cmd, capture_output=True, text=True)
     files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
     return list(set(
@@ -48,7 +57,6 @@ def get_changed_changelog_files(since_ref):
 
 
 def create_report_tag():
-    """Crea e pusha un tag report-YYYY-MM-DD per segnare questa run."""
     today = datetime.now().strftime("%Y-%m-%d")
     tag = f"report-{today}"
     subprocess.run(["git", "tag", tag], check=True)
@@ -56,49 +64,168 @@ def create_report_tag():
     return tag
 
 
-# ─── Claude ─────────────────────────────────────────────────────────────────
+# ─── Parsing ─────────────────────────────────────────────────────────────────
 
-def call_claude(changelogs: dict) -> dict:
+def parse_frontmatter(content: str) -> dict:
+    meta = {"component": "", "figma_id": "", "last_updated": ""}
+    if not content.startswith("---"):
+        return meta
+    end = content.find("---", 3)
+    if end == -1:
+        return meta
+    for line in content[3:end].strip().split("\n"):
+        if ":" in line:
+            key, _, val = line.partition(":")
+            meta[key.strip()] = val.strip().strip('"')
+    return meta
+
+
+def parse_entries(content: str) -> list:
     """
-    Manda i changelog a Claude e riceve JSON con summary + post per componente.
+    Estrae le voci changelog come lista di dict:
+    {date, type, description, author, project}
     """
-    changelog_text = "\n\n---\n\n".join(
-        f"### {path}\n{content}" for path, content in changelogs.items()
-    )
+    entries = []
+    current_date = ""
+    body = re.sub(r"^---.*?---\s*", "", content, flags=re.DOTALL)
+    body = re.sub(r"^#[^\n]*\n", "", body, flags=re.MULTILINE)
 
-    prompt = f"""Sei il comunicatore del Design System Antares.
-Questa settimana sono stati aggiornati i seguenti componenti:
+    for line in body.split("\n"):
+        date_match = re.match(r"^###\s+(.+)", line)
+        if date_match:
+            current_date = date_match.group(1).strip()
+            continue
 
-{changelog_text}
+        entry_match = re.match(r"^-\s+\*\*(.+?)\*\*\s*[·•]\s*(.+)", line)
+        if entry_match and current_date:
+            change_type = entry_match.group(1).strip()
+            rest = entry_match.group(2).strip()
+            parts = rest.split(" — ")
+            description = parts[0].strip()
+            author, project = "", ""
+            if len(parts) > 1:
+                m = re.match(r"\*(.+?)\*\s*[·•]?\s*(.*)", parts[1])
+                if m:
+                    author = m.group(1).strip()
+                    project = m.group(2).strip()
+                else:
+                    author = parts[1].strip()
+            entries.append({
+                "date": current_date,
+                "type": change_type,
+                "description": description,
+                "author": author,
+                "project": project,
+            })
+    return entries
 
-Il tuo compito è generare due cose:
 
-1. UN MESSAGGIO RIASSUNTIVO GENERALE (3-4 righe max) che introduce la settimana del DS.
-   Tono: caldo, diretto, in italiano. Inizia con "Ciao a tutti! 👋"
+# ─── Messaggio 1: Report strutturato (Python, no LLM) ────────────────────────
 
-2. UN POST SLACK PER OGNI COMPONENTE modificato.
-   Scrivi come farebbe un designer che racconta il suo lavoro ai colleghi:
-   - Prima persona, tono conversazionale
-   - Spiega il "perché" della modifica, non solo il "cosa"
-   - Menziona il nome del componente in grassetto (*NomeComponente*)
-   - Qualche emoji ma senza esagerare
-   - Chiudi sempre con "Grazie, DS Team"
-   - Lunghezza: 4-8 righe
+def build_weekly_report(changelogs_data: list) -> str:
+    today = datetime.now().strftime("%d %b %Y")
+    n_components = len([d for d in changelogs_data if d["entries"]])
+    lines = [
+        f"📋 *Antares DS — Weekly Report* | {today}",
+        f"_{n_components} {'componente aggiornato' if n_components == 1 else 'componenti aggiornati'} questa settimana_",
+        "",
+    ]
+
+    for item in changelogs_data:
+        meta = item["meta"]
+        entries = item["entries"]
+        if not entries:
+            continue
+
+        component_name = meta.get("component") or item["filepath"].split("/")[1].title()
+        dates = list(dict.fromkeys(e["date"] for e in entries))
+        lines.append(f"*{component_name}* · {', '.join(dates)}")
+
+        for e in entries:
+            emoji = get_emoji(e["type"])
+            line = f"  {emoji}  {e['type']} · {e['description']}"
+            if e["author"]:
+                line += f"  —  {e['author']}"
+            if e["project"]:
+                line += f"  ·  _{e['project']}_"
+            lines.append(line)
+
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+# ─── Messaggio 2+: Post per componente (Claude) ───────────────────────────────
+
+def call_claude(changelogs_data: list) -> dict:
+    components_text = ""
+    for item in changelogs_data:
+        meta = item["meta"]
+        entries = item["entries"]
+        if not entries:
+            continue
+
+        component_name = meta.get("component") or item["filepath"].split("/")[1].title()
+        figma_id = meta.get("figma_id", "").strip().strip('"')
+        figma_url = f"{FIGMA_BASE_URL}{figma_id}" if figma_id else None
+
+        components_text += f"\n### {component_name}\n"
+        if figma_url:
+            components_text += f"Link Figma: {figma_url}\n"
+        components_text += "Modifiche:\n"
+        for e in entries:
+            line = f"- [{e['type']}] {e['description']}"
+            if e["author"]:
+                line += f" (di {e['author']})"
+            if e["project"]:
+                line += f" — progetto: {e['project']}"
+            components_text += line + "\n"
+
+    prompt = f"""Sei il comunicatore del Design System Antares. Scrivi in italiano.
+
+Questa settimana sono stati aggiornati questi componenti:
+{components_text}
+
+Per ogni componente scrivi UN POST SLACK seguendo questo stile esatto:
+
+ESEMPIO:
+---
+Ciao a tutti! 👋
+
+Ho appena pubblicato un aggiornamento al componente *Button* — da adesso lo stato hover è molto più leggibile su sfondi chiari.
+
+Questa modifica è arrivata perché diversi team ci avevano segnalato difficoltà nel distinguere lo stato hover su alcuni layout. Ho aumentato il contrasto e allineato tutto alle linee guida di accessibilità.
+
+🔗 Componente su Figma: https://www.figma.com/file/xxx
+
+⚠️ Ricordate di aggiornare le librerie nei vostri file di lavoro per ricevere questa modifica — qualsiasi file in cui usate il Button andrà refreshato.
+
+Grazie, DS Team
+---
+
+REGOLE:
+- Prima persona, tono caldo e diretto
+- Inizia sempre con un saluto ("Ciao a tutti! 👋" o "Hey! 👋" o simile)
+- Spiega il PERCHÉ della modifica — il problema che risolve, non solo cosa è cambiato
+- Se il link Figma è disponibile includilo, altrimenti ometti la riga
+- Includi SEMPRE il reminder di aggiornare le librerie con menzione dei file impattati
+- Chiudi sempre con "Grazie, DS Team"
+- In Slack grassetto = *asterischi*, corsivo = _underscore_
+- Usa emoji con misura
 
 Rispondi ESCLUSIVAMENTE con un oggetto JSON valido, senza testo prima o dopo:
 {{
-  "summary": "testo del messaggio riassuntivo",
   "component_posts": [
     {{
       "component": "nome componente",
-      "post": "testo del post Slack"
+      "post": "testo completo del post Slack"
     }}
   ]
 }}"""
 
     body = json.dumps({
         "model": CLAUDE_MODEL,
-        "max_tokens": 2048,
+        "max_tokens": 3000,
         "messages": [{"role": "user", "content": prompt}]
     }).encode("utf-8")
 
@@ -115,7 +242,6 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON valido, senza testo prima o dopo:
     with urllib.request.urlopen(req) as resp:
         result = json.loads(resp.read())
         raw = result["content"][0]["text"].strip()
-        # Rimuove eventuali code block markdown (```json ... ```)
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -124,10 +250,9 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON valido, senza testo prima o dopo:
         return json.loads(raw)
 
 
-# ─── Slack ───────────────────────────────────────────────────────────────────
+# ─── Slack ────────────────────────────────────────────────────────────────────
 
 def post_to_slack(text: str):
-    """Posta un messaggio su Slack via Incoming Webhook."""
     body = json.dumps({"text": text}).encode("utf-8")
     req = urllib.request.Request(
         SLACK_WEBHOOK_URL,
@@ -142,7 +267,7 @@ def post_to_slack(text: str):
         print(f"❌ Errore Slack: {e.code} — {e.read().decode()}")
 
 
-# ─── Main ────────────────────────────────────────────────────────────────────
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     print("🔍 Cerco l'ultimo tag report...")
@@ -158,27 +283,31 @@ def main():
 
     print(f"   Trovati: {changed_files}")
 
-    changelogs = {}
+    changelogs_data = []
     for filepath in changed_files:
         if os.path.exists(filepath):
-            changelogs[filepath] = open(filepath).read()
+            content = open(filepath).read()
+            changelogs_data.append({
+                "filepath": filepath,
+                "content": content,
+                "meta": parse_frontmatter(content),
+                "entries": parse_entries(content),
+            })
         else:
-            print(f"⚠️  File non trovato localmente: {filepath}")
+            print(f"⚠️  File non trovato: {filepath}")
 
-    if not changelogs:
+    if not changelogs_data:
         print("❌ Nessun file leggibile. Esco.")
         return
 
-    print(f"🤖 Chiamo Claude ({CLAUDE_MODEL})...")
-    result = call_claude(changelogs)
+    # Messaggio 1 — Report strutturato
+    print("📤 Invio report strutturato su Slack...")
+    post_to_slack(build_weekly_report(changelogs_data))
+    print("   ✅ Report settimanale inviato")
 
-    print("📤 Invio su Slack...")
-
-    # 1 — Messaggio riassuntivo
-    post_to_slack(result["summary"])
-    print("   ✅ Riassunto inviato")
-
-    # 2 — Un post per ogni componente
+    # Messaggi 2+ — Post per componente
+    print(f"🤖 Chiamo Claude per i post per componente...")
+    result = call_claude(changelogs_data)
     for item in result.get("component_posts", []):
         post_to_slack(item["post"])
         print(f"   ✅ Post inviato: {item['component']}")
@@ -186,7 +315,6 @@ def main():
     print("🏷️  Creo tag report...")
     tag = create_report_tag()
     print(f"   ✅ Tag creato: {tag}")
-
     print("🎉 Report completato.")
 
 
