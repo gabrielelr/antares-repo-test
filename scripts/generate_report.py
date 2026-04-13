@@ -56,6 +56,21 @@ def get_changed_changelog_files(since_ref):
     ))
 
 
+def get_new_lines_from_diff(filepath: str, since_ref: str) -> str:
+    """Restituisce solo le righe AGGIUNTE nel file rispetto all'ultimo tag."""
+    if since_ref:
+        cmd = ["git", "diff", since_ref, "HEAD", "--", filepath]
+    else:
+        cmd = ["git", "diff", "HEAD~7", "HEAD", "--", filepath]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    added = [
+        line[1:]  # rimuove il "+" iniziale
+        for line in result.stdout.split("\n")
+        if line.startswith("+") and not line.startswith("+++")
+    ]
+    return "\n".join(added)
+
+
 def create_report_tag():
     base = datetime.now().strftime("%Y-%m-%d")
     tag = f"report-{base}"
@@ -154,12 +169,13 @@ def build_weekly_report_blocks(changelogs_data: list) -> dict:
         {"type": "divider"},
     ]
 
-    # Larghezze colonne (caratteri)
-    W = {"date": 11, "type": 13, "desc": 38, "author": 16, "project": 12}
+    # Larghezze colonne (caratteri) — desc ampia, Slack fa scroll orizzontale
+    W = {"date": 11, "type": 13, "desc": 55, "author": 16, "project": 14}
 
     def pad(s, w):
         s = str(s or "—")
-        return s[:w - 1].ljust(w) if len(s) >= w else s.ljust(w)
+        # Tronca solo se proprio necessario, aggiunge "…" per segnalare il taglio
+        return (s[:w - 1] + "…").ljust(w) if len(s) >= w else s.ljust(w)
 
     for item in active:
         meta    = item["meta"]
@@ -341,17 +357,18 @@ def main():
     changelogs_data = []
     for filepath in changed_files:
         if os.path.exists(filepath):
-            content = open(filepath).read()
-            entries = parse_entries(content)
-            print(f"   📄 {filepath} → {len(entries)} entry trovate")
+            full_content = open(filepath).read()
+            # Parsifica solo le righe AGGIUNTE dal diff → evita di ripubblicare entry vecchie
+            diff_content = get_new_lines_from_diff(filepath, last_tag)
+            entries = parse_entries(diff_content)
+            print(f"   📄 {filepath} → {len(entries)} entry nuove trovate")
             if not entries:
-                # Stampa le prime 20 righe per debug formato
-                preview = "\n".join(content.splitlines()[:20])
-                print(f"   ⚠️  Nessuna entry parsificata. Anteprima file:\n{preview}\n")
+                preview = "\n".join(diff_content.splitlines()[:20])
+                print(f"   ⚠️  Nessuna entry nel diff. Anteprima diff:\n{preview}\n")
             changelogs_data.append({
                 "filepath": filepath,
-                "content": content,
-                "meta": parse_frontmatter(content),
+                "content": full_content,
+                "meta": parse_frontmatter(full_content),
                 "entries": entries,
             })
         else:
