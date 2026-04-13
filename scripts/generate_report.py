@@ -169,16 +169,11 @@ def build_weekly_report_blocks(changelogs_data: list) -> dict:
         {"type": "divider"},
     ]
 
-    # Larghezze colonne (caratteri) — desc senza limite, Slack fa scroll orizzontale
-    W = {"date": 11, "type": 13, "author": 16, "project": 14}
+    # Larghezze colonne fisse — la descrizione va su riga separata
+    W = {"date": 11, "type": 13, "author": 18, "project": 14}
 
     def pad(s, w):
-        s = str(s or "—")
-        return s.ljust(w)
-
-    def pad_desc(s):
-        # Nessun troncamento sulla descrizione
-        return str(s or "—")
+        return str(s or "—").ljust(w)
 
     for item in active:
         meta    = item["meta"]
@@ -199,24 +194,25 @@ def build_weekly_report_blocks(changelogs_data: list) -> dict:
 
         # ── Tabella monospace ──
         col_header = (
-            pad("DATA",     W["date"])
-            + pad("TIPO",   W["type"])
-            + pad("MODIFICA", 55)
+            pad("DATA",   W["date"])
+            + pad("TIPO", W["type"])
             + pad("AUTORE", W["author"])
             + "PROGETTO"
         )
-        sep = "─" * (sum(W.values()) + 57)
+        sep = "─" * sum(W.values())
         rows = [col_header, sep]
 
         for e in entries:
-            desc_padded = pad_desc(e["description"]).ljust(55)
+            # Riga con colonne fisse
             rows.append(
-                pad(e["date"],    W["date"])
-                + pad(e["type"],  W["type"])
-                + desc_padded
-                + pad(e["author"], W["author"])
+                pad(e["date"],   W["date"])
+                + pad(e["type"], W["type"])
+                + pad(e["author"] or "—", W["author"])
                 + (e["project"] or "—")
             )
+            # Descrizione su riga dedicata, indentata
+            rows.append(f"  → {e['description']}")
+            rows.append("")  # riga vuota tra entry
 
         table = "```" + "\n".join(rows) + "```"
         blocks.append({
