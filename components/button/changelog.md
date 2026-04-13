@@ -7,6 +7,9 @@ last_updated: 2026-04-13
 # Button — Changelog
 
 ### 13/04/2026
+- **Bug fix** · Fixato bug con i token — *Gabriele*
+- **Updated** · Aggiunto stato di hover — *Gabriele* · PRJ10000
+### 13/04/2026
 - **Updated** · Aggiunto lo stato di hover nel bottone ghost — *Gabriele* · PRJ00001
 - **Updated** · Rimosso il background nel bottone ghost che messo su certi background risaltava troppo — *Gabriele* · PRJ00001
 ### 13/04/2026
