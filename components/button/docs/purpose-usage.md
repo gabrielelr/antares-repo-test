@@ -13,6 +13,8 @@ Use it in:
 - Card
 - Widget
 
+![Preview Buttons group](./images/purpose-buttons-group.png)
+
 ---
 
 ## Buttons group - Reserved Area
@@ -25,6 +27,8 @@ Compared to the standard button group, it behaves as a sticky row on mobile and 
 Use it in:
 - Reserved area
 
+![Preview Buttons group Reserved Area](./images/purpose-buttons-reserved-area.png)
+
 ---
 
 ## Buttons sticky group
@@ -35,6 +39,8 @@ The button sticky combo can be configured with one or two CTAs based on the cont
 
 Use it in:
 - Modals
+
+![Preview Buttons sticky group](./images/purpose-buttons-sticky.png)
 
 ---
 
@@ -48,3 +54,5 @@ In the final CTA, all flows use "Conferma", except for registration, which uses 
 
 Use it in:
 - Modals/Pages of a process flow (Deposit flow, Registration flow, Recovery password, ...)
+
+![Preview Buttons process](./images/purpose-buttons-process.png)
